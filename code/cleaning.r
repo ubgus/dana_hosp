@@ -28,47 +28,59 @@ main_df <- read_csv("./data/raw/dana_24_25.csv",
                     col_types = "cccccccccccddddccccccccccccccccccccccccccccccccccccccccccc",
                     locale = locale_es,
                     skip = 1) |> 
+  
+  # Definir las varibles tipo "fecha" y "factor"
   mutate(
     across(contains("date"), dmy),
     across(contains("start"), dmy),
     across(contains("_end_"), dmy),
-    across(contains("hosp_re"), factor),
-    gender = factor(gender),
-    htn = factor(htn),
-    diabetes = factor(!is.na(diabetes_type)))
+    across(contains("hosp_re"), ~ factor(.x,
+                                         levels = c("No", "Yes"),
+                                         labels = c("No", "Si"))),
+    gender = factor(gender,
+                    levels = c("F", "M"),
+                    labels = c("Mujer", "Hombre")),
+    htn = factor(htn,
+                 levels = c("N", "Y"),
+                 labels = c("No", "Si")),
+    diabetes = factor(!is.na(diabetes_type),
+                      levels = c("FALSE", "TRUE"),
+                      labels = c("No", "Si")))
 
+
+# Generar dataframe para extraer análisis demográfico ####
+# Primero convertir a formato largo, para generar nueva columna con la información del periodo
+# y poder usar ''gtsummary'' para la tabla comparativa de poblaciones
 demogr_df <- main_df |> 
   select(id, gender, birth_date, htn, diabetes, diabetes_type, contains("p1"), contains("p2")) |> 
   pivot_longer(
     cols = matches("_p[12]"),
     names_to = c(".value", "period"),
     names_pattern = "(.+?)_(p[12])") |> 
-  filter(!is.na(clinic)) |> 
-  mutate(period = case_when(
+  filter(!is.na(clinic)) |>           # Este filter permite eliminar entradas duplicadas de pacientes 
+  mutate(period = case_when(          # que solo están presentes un periodo
     period == "p1" ~ "2023",
     period == "p2" ~ "2024"
   ))
 
-demogr_tb <- demogr_df |>
-  tbl_summary(
-    by = period,
-    include = c()
-  )
-
-tbl_long <- demogr_df %>%
+# Codigo para generar la tabla comparativa demográfica
+demogr_tb <- demogr_df |> 
   tbl_summary(
     by = period,
     include = c(gender, htn, diabetes, status, charlson, karnofsky, va),
-    label = list(
+    label = list( # TODO: traducir las etiquetas al español
       gender ~ "Gender",
       htn ~ "Hypertension",
       diabetes ~ "Diabetes", 
-      status ~ "Clinical Status",
+      status ~ "Clinical Status",  # TODO: definir si vamos a utilizar esta variable y como
       charlson ~ "Charlson Comorbidity Index",
       karnofsky ~ "Karnofsky Performance Score",
-      va ~ "Vascular Access"
-    )
-  ) %>%
-  add_p()
+      va ~ "Vascular Access"),  # TODO: definir que hacer con los pacientes que inician después del inicio del periodo
+    value = list(
+      gender ~ "Mujer",
+      c(htn, diabetes) ~ "Si")
+  ) |> 
+  add_p() # TODO: añadir 'simulate.p.value=TRUE' en esta sección para eliminar los errores de calculo de p
 
-print(tbl_long)
+print(demogr_tb)
+
