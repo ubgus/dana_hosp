@@ -57,30 +57,32 @@ demogr_df <- main_df |>
     cols = matches("_p[12]"),
     names_to = c(".value", "period"),
     names_pattern = "(.+?)_(p[12])") |> 
-  filter(!is.na(clinic)) |>           # Este filter permite eliminar entradas duplicadas de pacientes 
-  mutate(period = case_when(          # que solo están presentes un periodo
+  filter(!is.na(clinic) & !is.na(va)) |>           # Este filter permite eliminar entradas duplicadas de pacientes que solo
+  mutate(period = case_when(                       # están presentes un periodo y aquellos que iniciaron después del periodo
     period == "p1" ~ "2023",
-    period == "p2" ~ "2024"
-  ))
+    period == "p2" ~ "2024"),
+    age = as.numeric(difftime(status_date, birth_date, units = "days")) / 365.25)
 
 # Codigo para generar la tabla comparativa demográfica
 demogr_tb <- demogr_df |> 
   tbl_summary(
     by = period,
-    include = c(gender, htn, diabetes, status, charlson, karnofsky, va),
+    include = c(age, gender, htn, diabetes, status, charlson, karnofsky, va),
     label = list( # TODO: traducir las etiquetas al español
-      gender ~ "Gender",
-      htn ~ "Hypertension",
+      age ~ "Edad",
+      gender ~ "Mujeres",
+      htn ~ "Hipertensión",
       diabetes ~ "Diabetes", 
-      status ~ "Clinical Status",  # TODO: definir si vamos a utilizar esta variable y como
-      charlson ~ "Charlson Comorbidity Index",
-      karnofsky ~ "Karnofsky Performance Score",
-      va ~ "Vascular Access"),  # TODO: definir que hacer con los pacientes que inician después del inicio del periodo
+      charlson ~ "Índice de Charlson",
+      karnofsky ~ "Karnofsky",  # TODO: ¿mostrar entero o agruparlo?
+      va ~ "Acceso Vascular"),
+    statistic = list(
+      age ~ "{mean} (\u00B1{sd})"),
     value = list(
       gender ~ "Mujer",
       c(htn, diabetes) ~ "Si")
   ) |> 
-  add_p() # TODO: añadir 'simulate.p.value=TRUE' en esta sección para eliminar los errores de calculo de p
+  add_p(test.args = c(karnofsky, status) ~ list(simulate.p.value = TRUE))
 
 print(demogr_tb)
 
