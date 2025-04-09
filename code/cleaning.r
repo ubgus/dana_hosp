@@ -2,7 +2,7 @@
 require(tidyverse)
 require(lubridate)
 require(gtsummary)
-library(ggplot2)
+require(ggplot2)
 
 # Definir locale, cargar dataframe y renombrar columnas ####
 
@@ -30,7 +30,7 @@ main_df <- read_csv("./data/raw/dana_24_25.csv",
                     locale = locale_es,
                     skip = 1) |> 
   
-  # Definir las varibles tipo "fecha" y "factor"
+  # Definir las variables tipo "fecha" y "factor"
   mutate(
     across(contains("date"), dmy),
     across(contains("start"), dmy),
@@ -56,6 +56,4 @@ period_predana_end <- date("2024-02-28")
 
 period_postdana_start <- date("2024-10-28")
 period_postdana_end <- date("2025-02-28")
-
-
 
