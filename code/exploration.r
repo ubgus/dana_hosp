@@ -166,7 +166,7 @@ hosp_tbl <- hosp_df |>
     statistic = list(
       all_continuous() ~ "{mean} (\u00B1{sd})"),
     value = hosp_re ~ "Si") |> 
-  add_p(test.args = c(period) ~ list(simulate.p.value = TRUE))
+  add_p(test.args = period ~ list(simulate.p.value = TRUE))
 
 print(hosp_tbl)
 
