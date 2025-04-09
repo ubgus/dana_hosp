@@ -1,11 +1,11 @@
 # Cargar paquetes en memoria ####
+require(MASS)
+require(gtsummary)
 require(tidyverse)
 require(lubridate)
-require(gtsummary)
 require(ggplot2)
 
 # Definir locale, cargar dataframe y renombrar columnas ####
-
 locale_es <- locale(date_names = "es", 
                     decimal_mark = ",",
                     grouping_mark = ".")

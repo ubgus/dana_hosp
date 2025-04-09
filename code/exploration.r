@@ -1,5 +1,5 @@
 # Carga los paquetes a usar, junto con la versión limpia del dataframe ####
-# Este es el documento de experimientación inicial 
+# Este es el documento de experimentación inicial 
 
 source("./code/cleaning.r")
 
