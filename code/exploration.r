@@ -26,12 +26,13 @@ demogr_df <- main_df |>
 demogr_tbl <- demogr_df |> 
   tbl_summary(
     by = period,
-    include = c(age, gender, htn, diabetes, charlson, karnofsky, va),
+    include = c(age, gender, htn, diabetes, diabetes_type, charlson, karnofsky, va),
     label = list(
       age ~ "Edad",
       gender ~ "Mujeres",
       htn ~ "Hipertensión",
-      diabetes ~ "Diabetes", 
+      diabetes ~ "Diabetes Mellitus",
+      diabetes_type ~ "Tipo de Diabetes",
       charlson ~ "Índice de Charlson",
       karnofsky ~ "Karnofsky",  # TODO: ¿mostrar entero o agruparlo?
       va ~ "Acceso Vascular"),
