@@ -8,11 +8,10 @@ source("./code/cleaning.r")
 # Crear tabla para comparar datos demográficos y comorbilidades ####
 demogr_df <- main_df |> 
   select(id, gender, birth_date, htn, diabetes, diabetes_type, contains("p1"), contains("p2")) |> 
-  pivot_longer(
-    cols = matches("_p[12]"),
-    names_to = c(".value", "period"),
-    names_pattern = "(.+?)_(p[12])") |> 
-
+  pivot_longer(cols = matches("_p[12]"),
+               names_to = c(".value", "period"),
+               names_pattern = "(.+?)_(p[12])") |> 
+  
   # Eliminar entradas duplicadas de pacientes que solo están presentes un periodo y aquellos que iniciaron después del periodo
   filter(!is.na(clinic) & !is.na(va)) |>
   
@@ -34,15 +33,21 @@ demogr_df <- main_df |>
     age = if_else(
       period == "Pre-DANA",
       time_length(interval(birth_date, period_predana_start), "years"),
-      time_length(interval(birth_date, period_postdana_start), "years")))
+      time_length(interval(birth_date, period_postdana_start), "years")),
+    age_group = cut(age, breaks = c(18, 50, 65, 75, Inf), 
+                    labels = c("18-49", "50-64", "65-74", "\u2265 75"),
+                    # TODO: comparar si hay diferencias en los resultados según sea ordinal o no
+                    # ordered_result = TRUE
+    ))
 
 # Genera tabla comparativa demográfica
 demogr_tbl <- demogr_df |> 
   tbl_summary(
     by = period,
-    include = c(age, gender, htn, diabetes, diabetes_type, charlson, karnofsky, va),
+    include = c(age, age_group, gender, htn, diabetes, diabetes_type, charlson, karnofsky, va),
     label = list(
       age ~ "Edad",
+      age_group ~ "Edad (Categórica)",
       gender ~ "Mujeres",
       htn ~ "Hipertensión",
       diabetes ~ "Diabetes Mellitus",
@@ -175,19 +180,11 @@ analysis_df <- main_df |>
   
   # Add patient characteristics
   right_join(
-    distinct(select(demogr_df, id, gender, age, htn, diabetes, charlson, va, period)),
-    by = c("id", "period", "gender", "htn", "diabetes")
-  ) |> 
+    distinct(select(demogr_df, id, clinic, gender, age, age_group, htn, diabetes, charlson, va, period)),
+    by = c("id", "period", "gender", "htn", "diabetes"))
   
-  # Create analysis variables
-  mutate(
-    age_group = cut(age, breaks = c(18, 50, 65, 75, Inf), 
-                    labels = c("Adulto", "Adulto mayor", "Anciano", "Anciano mayor"),
-                    # TODO: comparar si hay diferencias en los resultados según sea ordinal o no
-                    # ordered_result = TRUE
-                    ))
 
-# 1. Overall Hospitalization percentage by Period and Cause
+# 1. Overall Hospitalization percentage by Period and Cause ####
 tbl_overall <- analysis_df |> 
   tbl_strata(
     strata = period,
@@ -213,53 +210,167 @@ tbl_overall <- analysis_df |>
 # Visualizar
 print(tbl_overall)
 
-# 2. Risk Ratio Analysis Using Negative Binomial Regression
+# 2. Análisis de hospitalizaciones apareado (solo pacientes presentes en ambos periodos) ####
+# 2.1 Identificar pacientes en ambos periodos
 
-model_data <- analysis_df |> 
-  group_by(id, period) |> 
-  mutate(hosp_count = n()) |> 
-  ungroup() |> 
-  distinct(id, period, adm_number, .keep_all = TRUE) |> 
-  filter(
-    !is.na(hosp_count),
-    !is.infinite(hosp_count)
+patients_in_both_periods <- analysis_df |>
+  group_by(id) |>
+  summarize(unique_periods = n_distinct(period)) |>
+  filter(unique_periods == 2) |>
+  pull(id)
+
+# 2.2 Dataset de pacientes apareados
+
+# Crea un dataframe con todas las combinaciones de id * periodo y datos clínicos
+all_patient_periods <- expand_grid(
+  id = patients_in_both_periods,
+  period = c("Pre-DANA", "Post-DANA")
+) |> 
+  # Añade datos demográficos
+  left_join(
+    demogr_df |> 
+      select(id, period, gender, age, age_group, htn, diabetes, charlson, va, clinic) |> 
+      distinct(id, period, .keep_all = TRUE),
+    by = join_by(id, period)
   )
 
-model <- glm.nb(
-  hosp_count ~ period + hosp_cause_groups + age_group + gender + htn + diabetes + charlson +
-    offset(log_person_time),
-  data = model_data,
-  control = glm.control(maxit = 100) # Increase iterations
+# Combinarlo con los eventos de hospitalización, si los hubiera, para crear el df de datos apareados.
+paired_df <- all_patient_periods |>
+  # LEFT join, para asegurarnos de que solo añadimos información a este df y no perdemos ninguna entrada
+  left_join(
+    analysis_df |> 
+      filter(!is.na(hosp_cause_groups)) |>  # Extraigamos solo eventos de hospitalización
+      group_by(id, period) |> 
+      summarise(hosp_count = n(),
+                infection_any = sum(hosp_cause_groups == "Infección") > 0,
+                infection_count = sum(hosp_cause_groups == "Infección"),
+                cardio_any = sum (hosp_cause_groups == "Cardiovascular") > 0,
+                cardio_count = sum(hosp_cause_groups == "Cardiovascular"),
+                .groups = "drop"),
+    by = join_by(id, period)
+  ) |> 
+  # Finalmente, completamos los NA con información de los no hospitalizados
+  mutate(
+    hosp_any = if_else(is.na(hosp_count), 0, 1),
+    across(c(contains("infection"), contains("cardio"), hosp_count), 
+           ~ if_else(is.na(.x), 0, .x))
+  )
+
+# 2.3 Convertir en dataframe ancho para realizar los test de comparación
+paired_wide <- paired_df |>
+  pivot_wider(
+    id_cols = c(id, gender, htn, diabetes),
+    names_from = period,
+    values_from = c(charlson, age_group, hosp_any, hosp_count, infection_any, infection_count, cardio_any, cardio_count),
+    names_sep = "_"
+  )
+
+# 2.4 Pruebas estadísticas
+paired_wide |> 
+  mutate(
+    hosp_diff = `hosp_count_Post-DANA` - `hosp_count_Pre-DANA`,
+    infection_diff = `infection_count_Post-DANA` - `infection_count_Pre-DANA`,
+    cardio_diff = `cardio_count_Post-DANA` - `cardio_count_Pre-DANA`
+  ) |>
+  summarize(
+    mean_hosp_diff = mean(hosp_diff, na.rm = TRUE),
+    p_hosp = t.test(`hosp_count_Post-DANA`, `hosp_count_Pre-DANA`, paired = TRUE)$p.value,
+    mean_infection_diff = mean(infection_diff, na.rm = TRUE),
+    p_infection = t.test(`infection_count_Post-DANA`, `infection_count_Pre-DANA`, paired = TRUE)$p.value,
+    mean_cardio_diff = mean(cardio_diff, na.rm = TRUE),
+    p_cardio = t.test(`cardio_count_Post-DANA`, `cardio_count_Pre-DANA`, paired = TRUE)$p.value
+  )  
+
+# Modelo de McNemar para todos, cardio e infección
+
+mcnemar_overall <- with(paired_wide, 
+                          table(factor(`hosp_any_Pre-DANA`, levels = c(0, 1)),
+                                factor(`hosp_any_Post-DANA`, levels = c(0, 1))))
+mcnemar.test(mcnemar_overall)
+
+
+mcnemar_infection <- with(paired_wide, 
+                          table(factor(`infection_any_Pre-DANA`, levels = c(0, 1)),
+                                factor(`infection_any_Post-DANA`, levels = c(0, 1))))
+mcnemar.test(mcnemar_infection)
+
+
+mcnemar_cardio <- with(paired_wide, 
+                          table(factor(`cardio_any_Pre-DANA`, levels = c(0, 1)),
+                                factor(`cardio_any_Post-DANA`, levels = c(0, 1))))
+mcnemar.test(mcnemar_cardio)
+
+# Determinar la fuerza del efecto (spoiler alert, es débil)
+effsize::cohen.d(paired_wide$`hosp_count_Post-DANA`, 
+                 paired_wide$`hosp_count_Pre-DANA`, paired=TRUE)
+
+
+
+# 3. Análisis con datos no apareados ####
+
+# Create complete set of actual patient-period combinations
+observed_patient_periods <- analysis_df |>
+  select(id, period) |>
+  distinct()
+
+# Create patient dataset with hospitalization flags
+unpaired_data <- observed_patient_periods |>
+  # Add demographic data
+  left_join(
+    main_df |> 
+      select(id, gender, htn, diabetes, charlson, age_group) |> 
+      distinct(id, .keep_all = TRUE),
+    by = "id"
+  ) |>
+  # Add hospitalization data
+  left_join(
+    analysis_df |>
+      group_by(id, period) |>
+      summarize(
+        was_hospitalized = 1,
+        hosp_count = n(),
+        any_infection = sum(hosp_cause_groups == "Infección") > 0,
+        infection_count = sum(hosp_cause_groups == "Infección"),
+        .groups = "drop"
+      ),
+    by = c("id", "period")
+  ) |>
+  # Fill NA values for non-hospitalized
+  mutate(
+    was_hospitalized = ifelse(is.na(was_hospitalized), 0, was_hospitalized),
+    hosp_count = ifelse(is.na(hosp_count), 0, hosp_count),
+    any_infection = ifelse(is.na(any_infection), 0, any_infection),
+    infection_count = ifelse(is.na(infection_count), 0, infection_count),
+    # Record whether patient was in both periods (for stratification)
+    in_both_periods = id %in% patients_in_both_periods
+  )
+
+# Overall hospitalization risk model
+hosp_risk_model <- glm(
+  was_hospitalized ~ period + age_group + gender + htn + diabetes + charlson,
+  family = binomial(link = "logit"),
+  data = unpaired_data
 )
 
-# Format results with gtsummary
-tbl_model <- tbl_regression(
-  model,
-  exponentiate = TRUE,
-  label = list(
-    period ~ "Periodo",
-    hosp_cause_groups ~ "Causas de Hospitalization",
-    age_group ~ "Grupo Etario",
-    charlson ~ "Índice de Charlson")) |> 
-  add_global_p() |> 
-  modify_header(label ~ "**Variable**")
+# Infection-specific model
+infection_risk_model <- glm(
+  any_infection ~ period + age_group + gender + htn + diabetes + charlson,
+  family = binomial(link = "logit"),
+  data = unpaired_data
+)
 
-print(tbl_model)
+# Count models with exposure time
+unpaired_data <- unpaired_data |>
+  mutate(
+    exposure_time = case_when(
+      period == "Pre-DANA" ~ as.numeric(difftime(period_predana_end, period_predana_start, units="days")),
+      period == "Post-DANA" ~ as.numeric(difftime(period_postdana_end, period_postdana_start, units="days"))
+    ),
+    log_exposure = log(exposure_time)
+  )
 
-# 4. Visualization of Key Results
-ggplot(analysis_df |> 
-         count(period, hosp_cause_groups, age_group), 
-       aes(x = hosp_cause_groups, y = n, fill = period)) +
-  geom_col(position = "dodge") +
-  facet_wrap(~age_group, scales = "free_y") +
-  labs(title = "Hospitalizations by Cause, Age Group, and Flood Period",
-       x = "Cause of Hospitalization",
-       y = "Number of Admissions") +
-  theme_minimal() +
-  theme(axis.text.x = element_text(angle = 45, hjust = 1))
-
-# 5. Output Key Tables
-list(
-  Overall_Rates = tbl_overall,
-  Risk_Factors = tbl_model
+hosp_count_model <- glm.nb(
+  hosp_count ~ period + age_group + gender + htn + diabetes + charlson + 
+    offset(log_exposure),
+  data = unpaired_data
 )
